@@ -11,7 +11,7 @@
 <meta name="theme-color" content="#C8562A">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23C8562A'/%3E%3Ctext x='90' y='115' font-family='system-ui' font-size='80' font-weight='700' text-anchor='middle' fill='white'%3ELA%3C/text%3E%3C/svg%3E">
 <link rel="manifest" href="data:application/manifest+json;charset=utf-8;base64,ewogICJuYW1lIjogIkxBIDIwMjggLSAxNTAwbSBUcmFja2VyIiwKICAic2hvcnRfbmFtZSI6ICJMQSAyMDI4IiwKICAic3RhcnRfdXJsIjogIi4iLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiNmYWY5ZjciLAogICJ0aGVtZV9jb2xvciI6ICIjQzg1NjJBIiwKICAib3JpZW50YXRpb24iOiAicG9ydHJhaXQiCn0=">
-<title>LA 2028 — 1500m Tracker v15</title>
+<title>LA 2028 — 1500m Tracker v17</title>
 <style>
 /* === MOBILE-FIRST DESIGN === */
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
@@ -668,6 +668,78 @@ background:currentColor;
 display:inline-block;
 }
 
+/* === iCloud SAVE/RESTORE BAR === */
+.icloud-bar{
+display:flex;
+gap:8px;
+padding:10px 14px;
+background:var(–card);
+border-bottom:0.5px solid var(–border-light);
+position:sticky;
+top:0;
+z-index:50;
+}
+.icloud-btn{
+flex:1;
+font-size:14px;
+font-weight:600;
+padding:14px;
+border:none;
+border-radius:10px;
+cursor:pointer;
+font-family:inherit;
+display:flex;
+align-items:center;
+justify-content:center;
+gap:6px;
+-webkit-tap-highlight-color:transparent;
+transition:transform 0.15s,opacity 0.15s;
+}
+.icloud-btn:active{transform:scale(0.97);opacity:0.85;}
+.icloud-save{
+background:linear-gradient(135deg,#185FA5 0%,#0F4080 100%);
+color:#fff;
+}
+.icloud-save.unsaved{
+background:linear-gradient(135deg,#C8562A 0%,#993C1D 100%);
+animation:pulseSave 2s ease-in-out infinite;
+}
+@keyframes pulseSave{
+0%,100%{box-shadow:0 0 0 0 rgba(200,86,42,0.3);}
+50%{box-shadow:0 0 0 6px rgba(200,86,42,0);}
+}
+.icloud-restore{
+background:var(–border-light);
+color:var(–text);
+flex:0.5;
+}
+.icloud-icon{
+font-size:16px;
+display:inline-block;
+}
+
+/* iCloud confirmation toast */
+.icloud-toast{
+position:fixed;
+bottom:calc(var(–safe-bottom) + 90px);
+left:50%;
+transform:translateX(-50%) translateY(60px);
+background:#3B6D11;
+color:#fff;
+padding:12px 20px;
+border-radius:24px;
+font-size:14px;
+font-weight:500;
+z-index:300;
+opacity:0;
+transition:all 0.3s ease;
+box-shadow:0 8px 24px rgba(0,0,0,0.2);
+}
+.icloud-toast.show{
+transform:translateX(-50%) translateY(0);
+opacity:1;
+}
+
 /* === INPUTS === */
 input,select,textarea{
 font-family:inherit;
@@ -1302,6 +1374,17 @@ cursor:pointer;
     <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">complete</div>
   </div>
 </div>
+
+<div class="icloud-bar">
+  <button class="icloud-btn icloud-save" id="btn-icloud-save">
+    <span class="icloud-icon">☁︎</span> Save to iCloud
+  </button>
+  <button class="icloud-btn icloud-restore" id="btn-icloud-restore">
+    <span class="icloud-icon">↓</span> Restore
+  </button>
+</div>
+<input type="file" id="icloud-restore-input" accept=".json,application/json" style="display:none;">
+<div class="icloud-toast" id="icloud-toast"></div>
 
 <div class="main-nav">
   <button class="mn active" data-section="program">Today</button>
@@ -4659,12 +4742,147 @@ performBackupAndDownload();
 }
 });
 
+// === iCloud SAVE / RESTORE ===
+// Strategy: use Web Share API on iOS to trigger native share sheet,
+// which lets user “Save to Files” → “iCloud Drive”. One-tap experience.
+
+let dataChangedSinceLastSave=false;
+
+function showToast(msg,duration){
+const toast=document.getElementById(‘icloud-toast’);
+toast.textContent=msg;
+toast.classList.add(‘show’);
+setTimeout(()=>toast.classList.remove(‘show’),duration||2500);
+}
+
+function markUnsaved(){
+dataChangedSinceLastSave=true;
+document.getElementById(‘btn-icloud-save’).classList.add(‘unsaved’);
+}
+
+function markSaved(){
+dataChangedSinceLastSave=false;
+document.getElementById(‘btn-icloud-save’).classList.remove(‘unsaved’);
+setLastBackupDate();
+}
+
+// Hook into the existing save() function so any change marks data as unsaved
+const _originalSave=save;
+save=function(){
+_originalSave.apply(this,arguments);
+markUnsaved();
+};
+
+async function saveToiCloud(){
+const data=JSON.stringify(ST,null,2);
+const filename=‘la2028.json’;
+const blob=new Blob([data],{type:‘application/json’});
+const file=new File([blob],filename,{type:‘application/json’});
+
+// Try Web Share API first (works on iOS Safari 15+)
+if(navigator.canShare&&navigator.canShare({files:[file]})){
+try{
+await navigator.share({
+files:[file],
+title:‘LA 2028 backup’,
+text:‘Save this to iCloud Drive to back up your training data.’
+});
+markSaved();
+showToast(‘✓ Saved — choose “Save to Files” → iCloud Drive’);
+return;
+}catch(err){
+// User cancelled — that’s fine, don’t error
+if(err.name===‘AbortError’)return;
+console.log(‘Share API failed, falling back to download’,err);
+}
+}
+
+// Fallback: traditional download (works everywhere)
+const url=URL.createObjectURL(blob);
+const a=document.createElement(‘a’);
+a.href=url;
+a.download=filename;
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+markSaved();
+showToast(‘✓ Backup downloaded — save to iCloud Drive’);
+}
+
+function restoreFromiCloud(){
+document.getElementById(‘icloud-restore-input’).click();
+}
+
+document.getElementById(‘icloud-restore-input’).addEventListener(‘change’,e=>{
+const file=e.target.files[0];
+if(!file)return;
+const reader=new FileReader();
+reader.onload=ev=>{
+try{
+const data=JSON.parse(ev.target.result);
+if(typeof data!==‘object’||data===null){
+alert(‘That file does not look like a valid LA 2028 backup.’);
+return;
+}
+const sessionCount=Object.keys(data).filter(k=>k.startsWith(‘w’)).length;
+if(!confirm(`Restore from this backup? It contains ${sessionCount} session entries. Your current data will be replaced.`))return;
+// Mark as just-restored so we know to show success after reload
+data._justRestored=Date.now();
+// Write directly to localStorage and reload — this is the most reliable approach
+localStorage.setItem(‘la2028v10’,JSON.stringify(data));
+location.reload();
+}catch(err){
+alert(‘Could not read that file. Make sure it is a valid LA 2028 backup JSON.’);
+}
+};
+reader.readAsText(file);
+// Reset input so user can pick the same file again later
+e.target.value=’’;
+});
+
+document.getElementById(‘btn-icloud-save’).addEventListener(‘click’,saveToiCloud);
+document.getElementById(‘btn-icloud-restore’).addEventListener(‘click’,restoreFromiCloud);
+
+// On app open: if there’s NO local data, prompt to restore
+function checkRestoreOnOpen(){
+let hasAnyData=false;
+Object.keys(ST).forEach(k=>{
+if(k.startsWith(‘w’)&&ST[k]&&typeof ST[k]===‘object’){
+const v=ST[k];
+if(v.done||v.actualKm||(v.splits&&Object.keys(v.splits).length>0)){
+hasAnyData=true;
+}
+}
+});
+if(!hasAnyData&&!ST._dismissedFirstRestore){
+setTimeout(()=>{
+if(confirm(‘No training data found on this device. If you have a backup file in iCloud Drive, you can restore it now.\n\nTap OK to restore from a backup, or Cancel to start fresh.’)){
+restoreFromiCloud();
+} else {
+ST._dismissedFirstRestore=true;
+_originalSave();
+}
+},1000);
+}
+}
+
 renderPhaseTabs();
 renderGrid();
 updateStats();
 updateBackupStatus();
+checkRestoreOnOpen();
 if(shouldShowBackupReminder()){
 setTimeout(showBackupReminder,800);
+}
+
+// After a restore, show success toast
+if(ST._justRestored&&(Date.now()-ST._justRestored)<5000){
+delete ST._justRestored;
+_originalSave();
+setTimeout(()=>{
+showToast(‘✓ Data restored successfully’,3000);
+},500);
 }
 </script>
 
